@@ -1,10 +1,14 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/runtime.h>
 
 static NSString *const kWebsite = @"https://sharefiletruty.vercel.app";
 static NSString *const kYouTube = @"https://youtube.com/@trungdepzai_y29?si=NwiL5XBGnki7fI65";
 static NSString *const kAvatarURL = @"https://files.catbox.moe/znu13m.png";
+static NSString *const kGTokSuite = @"com.gtok.settings";
+static NSString *const kMasterKey = @"TrutyGTokMasterOn";
+static NSString *const kSnapshotKey = @"TrutyGTokSnapshot";
 
 typedef NS_ENUM(NSInteger, TrutyIconKind) {
     TrutyIconGlobe,
@@ -13,11 +17,13 @@ typedef NS_ENUM(NSInteger, TrutyIconKind) {
     TrutyIconUpload,
     TrutyIconChat,
     TrutyIconClose,
-    TrutyIconArrow
+    TrutyIconArrow,
+    TrutyIconPower
 };
 
 static UIView *gOverlay = nil;
 static UIView *gCard = nil;
+static __weak UILabel *gMasterSubtitle = nil;
 
 static BOOL TrutyReduceMotion(void) {
     return UIAccessibilityIsReduceMotionEnabled();
@@ -70,6 +76,144 @@ static UILabel *TrutyLabel(NSString *text, CGFloat size, UIFontWeight weight, UI
     label.textAlignment = align;
     label.numberOfLines = 0;
     return label;
+}
+
+static UIWindow *TrutyKeyWindow(void) {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        if (windowScene.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *window in windowScene.windows) {
+            if (window.isKeyWindow) return window;
+        }
+    }
+    return nil;
+}
+
+static UIViewController *TrutyTopController(void) {
+    UIViewController *controller = TrutyKeyWindow().rootViewController;
+    while (controller.presentedViewController) controller = controller.presentedViewController;
+    return controller;
+}
+
+static NSArray<NSString *> *TrutyGTokKnownKeys(void) {
+    return @[
+        @"GTokAccentColorEnabled", @"GTokAdBlockEnabled", @"GTokAppLockEnabled", @"GTokAuthorFilterEnabled",
+        @"GTokChatLockEnabled", @"GTokConfirmActionsEnabled", @"GTokCustomFontEnabled", @"GTokDateFilterEnabled",
+        @"GTokDateFilterToEnabled", @"GTokDeletedMessagesEnabled", @"GTokDownloadMusicEnabled",
+        @"GTokDurationFilterEnabled", @"GTokDurationLowerEnabled", @"GTokDurationUpperEnabled",
+        @"GTokFeedOverlayDimEnabled", @"GTokGhostModeEnabled", @"GTokKeywordFilterEnabled", @"GTokMinLikesEnabled",
+        @"GTokMinViewsEnabled", @"GTokNoWatermarkDownloadsEnabled", @"GTokRegionEnabled",
+        @"GTokStoryRingColorEnabled", @"GTokStreakKeeperEnabled", @"GTokVisualDecorEnabled",
+        @"GTokOLEDTheme", @"GTokOLEDKeyboard"
+    ];
+}
+
+static BOOL TrutyIsBoolValue(id value) {
+    return [value isKindOfClass:NSNumber.class] && CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID();
+}
+
+static NSArray<NSString *> *TrutyGTokKeys(NSUserDefaults *defaults, BOOL includeKnown) {
+    NSMutableOrderedSet<NSString *> *keys = [NSMutableOrderedSet orderedSet];
+    if (includeKnown) [keys addObjectsFromArray:TrutyGTokKnownKeys()];
+    NSArray<NSString *> *skip = @[@"Migration", @"LanguageChosen", @"Dev", @"Sideload", @"RepostAllowed"];
+    NSDictionary *all = defaults.dictionaryRepresentation;
+    for (NSString *key in all) {
+        if (![key hasPrefix:@"GTok"] || !TrutyIsBoolValue(all[key])) continue;
+        BOOL skipped = NO;
+        for (NSString *token in skip) {
+            if ([key containsString:token]) skipped = YES;
+        }
+        if (!skipped) [keys addObject:key];
+    }
+    return keys.array;
+}
+
+static BOOL TrutyMasterOn(void) {
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:kMasterKey];
+    return stored ? [stored boolValue] : YES;
+}
+
+static void TrutyGTokApply(BOOL on) {
+    NSUserDefaults *standard = NSUserDefaults.standardUserDefaults;
+    NSUserDefaults *suite = [[NSUserDefaults alloc] initWithSuiteName:kGTokSuite];
+    NSMutableArray<NSDictionary *> *targets = [NSMutableArray array];
+    [targets addObject:@{@"tag": @"standard", @"defaults": standard, @"known": @NO}];
+    if (suite) [targets addObject:@{@"tag": kGTokSuite, @"defaults": suite, @"known": @YES}];
+
+    NSMutableDictionary *snapshot = [([standard dictionaryForKey:kSnapshotKey] ?: @{}) mutableCopy];
+
+    for (NSDictionary *target in targets) {
+        NSString *tag = target[@"tag"];
+        NSUserDefaults *defaults = target[@"defaults"];
+
+        if (on) {
+            NSDictionary *saved = snapshot[tag];
+            for (NSString *key in saved[@"present"]) {
+                [defaults setObject:saved[@"present"][key] forKey:key];
+            }
+            for (NSString *key in saved[@"absent"]) {
+                [defaults removeObjectForKey:key];
+            }
+            [snapshot removeObjectForKey:tag];
+        } else {
+            NSMutableDictionary *present = [NSMutableDictionary dictionary];
+            NSMutableArray *absent = [NSMutableArray array];
+            for (NSString *key in TrutyGTokKeys(defaults, [target[@"known"] boolValue])) {
+                id value = [defaults objectForKey:key];
+                if (value) present[key] = value; else [absent addObject:key];
+                [defaults setBool:NO forKey:key];
+            }
+            snapshot[tag] = @{@"present": present, @"absent": absent};
+        }
+    }
+
+    [standard setObject:snapshot forKey:kSnapshotKey];
+}
+
+static void TrutyUpdateMasterText(BOOL on) {
+    gMasterSubtitle.text = on ? @"Đang bật theo cài đặt GTok của bạn"
+                              : @"Đã tắt, TikTok về nguyên bản. Mở lại TikTok để áp dụng hết";
+}
+
+static void TrutyExportClasses(void) {
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    NSRegularExpression *pattern =
+        [NSRegularExpression regularExpressionWithPattern:@"sticker|streak|AWEIM|IMSend|SendMessage|ChatInput|Emoji"
+                                                  options:NSRegularExpressionCaseInsensitive error:nil];
+    NSMutableString *out = [NSMutableString string];
+
+    for (unsigned int i = 0; i < count && out.length < 600000; i++) {
+        NSString *name = [NSString stringWithUTF8String:class_getName(classes[i])];
+        if (!name || [pattern numberOfMatchesInString:name options:0 range:NSMakeRange(0, name.length)] == 0) continue;
+        [out appendFormat:@"@interface %@\n", name];
+
+        unsigned int instanceCount = 0;
+        Method *instanceMethods = class_copyMethodList(classes[i], &instanceCount);
+        for (unsigned int j = 0; j < instanceCount && j < 60; j++) {
+            [out appendFormat:@"  - %s\n", sel_getName(method_getName(instanceMethods[j]))];
+        }
+        free(instanceMethods);
+
+        unsigned int classMethodCount = 0;
+        Method *classMethods = class_copyMethodList(object_getClass(classes[i]), &classMethodCount);
+        for (unsigned int j = 0; j < classMethodCount && j < 30; j++) {
+            [out appendFormat:@"  + %s\n", sel_getName(method_getName(classMethods[j]))];
+        }
+        free(classMethods);
+        [out appendString:@"@end\n\n"];
+    }
+    free(classes);
+
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"TikTokClasses.txt"];
+    [out writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    UIActivityViewController *sheet =
+        [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
+    UIViewController *top = TrutyTopController();
+    sheet.popoverPresentationController.sourceView = top.view;
+    [top presentViewController:sheet animated:YES completion:nil];
 }
 
 @interface TrutyIconView : UIView
@@ -179,6 +323,12 @@ static UILabel *TrutyLabel(NSString *text, CGFloat size, UIFontWeight weight, UI
             [path addLineToPoint:CGPointMake(13, 18)];
             break;
         }
+        case TrutyIconPower: {
+            [path addArcWithCenter:CGPointMake(12, 13) radius:8 startAngle:-M_PI_2 + 0.6 endAngle:3 * M_PI_2 - 0.6 clockwise:YES];
+            [path moveToPoint:CGPointMake(12, 3)];
+            [path addLineToPoint:CGPointMake(12, 11)];
+            break;
+        }
     }
 
     [path stroke];
@@ -216,6 +366,8 @@ static UILabel *TrutyLabel(NSString *text, CGFloat size, UIFontWeight weight, UI
 - (void)openWebsite;
 - (void)openYouTube;
 - (void)dismiss;
+- (void)masterChanged:(UISwitch *)sender;
+- (void)exportClasses;
 @end
 
 @implementation TrutyActions
@@ -234,6 +386,17 @@ static UILabel *TrutyLabel(NSString *text, CGFloat size, UIFontWeight weight, UI
 
 - (void)openWebsite { [self openURL:kWebsite]; }
 - (void)openYouTube { [self openURL:kYouTube]; }
+
+- (void)masterChanged:(UISwitch *)sender {
+    BOOL on = sender.isOn;
+    [NSUserDefaults.standardUserDefaults setBool:on forKey:kMasterKey];
+    TrutyGTokApply(on);
+    TrutyUpdateMasterText(on);
+    UIImpactFeedbackGenerator *haptic = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [haptic impactOccurred];
+}
+
+- (void)exportClasses { TrutyExportClasses(); }
 
 - (void)dismiss {
     UIView *overlay = gOverlay;
@@ -284,7 +447,7 @@ static void TrutyLoadAvatar(UIImageView *imageView, UIView *placeholder) {
     [task resume];
 }
 
-static UIView *TrutyInfoRow(TrutyIconKind kind, UIColor *tint, NSString *title, NSString *subtitle) {
+static UIView *TrutyIconTile(TrutyIconKind kind, UIColor *tint) {
     UIView *tile = [UIView new];
     tile.backgroundColor = [tint colorWithAlphaComponent:0.16];
     tile.layer.cornerRadius = 13;
@@ -294,7 +457,10 @@ static UIView *TrutyInfoRow(TrutyIconKind kind, UIColor *tint, NSString *title, 
     [tile addSubview:icon];
     TrutySize(icon, 22, 22);
     TrutyCenter(icon, tile);
+    return tile;
+}
 
+static UIView *TrutyInfoRow(TrutyIconKind kind, UIColor *tint, NSString *title, NSString *subtitle) {
     UILabel *titleLabel = TrutyLabel(title, 15, UIFontWeightSemibold, UIColor.whiteColor, NSTextAlignmentLeft, NO);
     UILabel *subtitleLabel = TrutyLabel(subtitle, 12.5, UIFontWeightRegular, [UIColor colorWithWhite:1 alpha:0.64], NSTextAlignmentLeft, NO);
 
@@ -302,7 +468,7 @@ static UIView *TrutyInfoRow(TrutyIconKind kind, UIColor *tint, NSString *title, 
     text.axis = UILayoutConstraintAxisVertical;
     text.spacing = 2;
 
-    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[tile, text]];
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[TrutyIconTile(kind, tint), text]];
     row.axis = UILayoutConstraintAxisHorizontal;
     row.alignment = UIStackViewAlignmentCenter;
     row.spacing = 14;
@@ -327,7 +493,6 @@ static TrutyGradientButton *TrutyActionButton(NSString *title, TrutyIconKind kin
 
     TrutyIconView *leading = [[TrutyIconView alloc] initWithKind:kind color:UIColor.whiteColor];
     UILabel *label = TrutyLabel(title, 16, UIFontWeightBold, UIColor.whiteColor, NSTextAlignmentLeft, YES);
-    label.userInteractionEnabled = NO;
     TrutyIconView *trailing = [[TrutyIconView alloc] initWithKind:TrutyIconArrow color:[UIColor colorWithWhite:1 alpha:0.85]];
     label.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -350,16 +515,66 @@ static TrutyGradientButton *TrutyActionButton(NSString *title, TrutyIconKind kin
     return button;
 }
 
-static UIWindow *TrutyKeyWindow(void) {
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
-        UIWindowScene *windowScene = (UIWindowScene *)scene;
-        if (windowScene.activationState != UISceneActivationStateForegroundActive) continue;
-        for (UIWindow *window in windowScene.windows) {
-            if (window.isKeyWindow) return window;
-        }
-    }
-    return nil;
+static UIButton *TrutyExportButton(void) {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+    button.accessibilityLabel = @"Xuất danh sách class TikTok";
+    [button addTarget:TrutyActions.shared action:@selector(exportClasses) forControlEvents:UIControlEventTouchUpInside];
+
+    UIColor *muted = [UIColor colorWithWhite:1 alpha:0.55];
+    TrutyIconView *icon = [[TrutyIconView alloc] initWithKind:TrutyIconUpload color:muted];
+    TrutySize(icon, 16, 16);
+    UILabel *label = TrutyLabel(@"Xuất danh sách class TikTok", 13, UIFontWeightMedium, muted, NSTextAlignmentLeft, NO);
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[icon, label]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 6;
+    row.userInteractionEnabled = NO;
+    [button addSubview:row];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [button.heightAnchor constraintEqualToConstant:40],
+        [row.centerXAnchor constraintEqualToAnchor:button.centerXAnchor],
+        [row.centerYAnchor constraintEqualToAnchor:button.centerYAnchor]
+    ]];
+    return button;
+}
+
+static UIView *TrutyBuildMaster(void) {
+    BOOL on = TrutyMasterOn();
+
+    UIView *box = [UIView new];
+    box.backgroundColor = [UIColor colorWithWhite:1 alpha:0.07];
+    box.layer.cornerRadius = 22;
+    box.layer.borderWidth = 1;
+    box.layer.borderColor = [TrutyRGB(124, 92, 255, 1) colorWithAlphaComponent:0.35].CGColor;
+
+    UILabel *title = TrutyLabel(@"Bật tính năng GTok", 15, UIFontWeightSemibold, UIColor.whiteColor, NSTextAlignmentLeft, NO);
+    UILabel *subtitle = TrutyLabel(@"", 12.5, UIFontWeightRegular, [UIColor colorWithWhite:1 alpha:0.64], NSTextAlignmentLeft, NO);
+    gMasterSubtitle = subtitle;
+    TrutyUpdateMasterText(on);
+
+    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[title, subtitle]];
+    text.axis = UILayoutConstraintAxisVertical;
+    text.spacing = 2;
+
+    UISwitch *toggle = [UISwitch new];
+    toggle.on = on;
+    toggle.onTintColor = TrutyRGB(124, 92, 255, 1);
+    toggle.accessibilityLabel = @"Bật hoặc tắt GTok";
+    [toggle setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [toggle setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [toggle addTarget:TrutyActions.shared action:@selector(masterChanged:) forControlEvents:UIControlEventValueChanged];
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[
+        TrutyIconTile(TrutyIconPower, TrutyRGB(34, 211, 238, 1)), text, toggle
+    ]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 12;
+    [box addSubview:row];
+    TrutyPin(row, box, UIEdgeInsetsMake(14, 14, 14, 14));
+    return box;
 }
 
 static UIView *TrutyBuildAvatar(void) {
@@ -538,6 +753,7 @@ static void TrutyShowInfo(void) {
         [card.centerXAnchor constraintEqualToAnchor:overlay.contentView.centerXAnchor],
         [card.centerYAnchor constraintEqualToAnchor:overlay.contentView.centerYAnchor],
         [card.widthAnchor constraintLessThanOrEqualToAnchor:overlay.contentView.widthAnchor constant:-40],
+        [card.heightAnchor constraintLessThanOrEqualToAnchor:overlay.contentView.heightAnchor constant:-70],
         preferredWidth
     ]];
 
@@ -587,16 +803,38 @@ static void TrutyShowInfo(void) {
 
     UIView *avatar = TrutyBuildAvatar();
     UIView *chip = TrutyBuildChip();
+    UIView *master = TrutyBuildMaster();
     UIView *group = TrutyBuildGroup();
+    UIButton *export = TrutyExportButton();
 
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[avatar, name, chip, group, website, youtube]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
+        avatar, name, chip, master, group, website, youtube, export
+    ]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 10;
     [stack setCustomSpacing:14 afterView:avatar];
-    [stack setCustomSpacing:22 afterView:chip];
+    [stack setCustomSpacing:20 afterView:chip];
+    [stack setCustomSpacing:12 afterView:master];
     [stack setCustomSpacing:18 afterView:group];
-    [glass.contentView addSubview:stack];
-    TrutyPin(stack, glass.contentView, UIEdgeInsetsMake(34, 22, 24, 22));
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIScrollView *scroll = [UIScrollView new];
+    scroll.showsVerticalScrollIndicator = NO;
+    scroll.alwaysBounceVertical = NO;
+    [glass.contentView addSubview:scroll];
+    TrutyPin(scroll, glass.contentView, UIEdgeInsetsZero);
+    [scroll addSubview:stack];
+
+    NSLayoutConstraint *fit = [scroll.heightAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.heightAnchor];
+    fit.priority = UILayoutPriorityDefaultHigh;
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:34],
+        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-12],
+        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:22],
+        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-22],
+        [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-44],
+        fit
+    ]];
 
     UIButton *close = [UIButton buttonWithType:UIButtonTypeCustom];
     close.accessibilityLabel = @"Đóng";
